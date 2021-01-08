@@ -7,10 +7,15 @@
 #   Description : keras_ppyolo
 #
 # ================================================================
-from config import *
+from collections import deque
+import datetime
+import cv2
+import os
+import time
+import threading
 import argparse
 
-from tools.cocotools import *
+from config import *
 from model.decode_np import Decode
 from model.yolo import *
 from tools.cocotools import get_classes
@@ -20,7 +25,7 @@ FORMAT = '%(asctime)s-%(levelname)s: %(message)s'
 logging.basicConfig(level=logging.INFO, format=FORMAT)
 logger = logging.getLogger(__name__)
 
-parser = argparse.ArgumentParser(description='YOLO Eval Script')
+parser = argparse.ArgumentParser(description='YOLO Infer Script')
 parser.add_argument('--use_gpu', type=bool, default=True)
 parser.add_argument('--config', type=int, default=1,
                     choices=[0, 1, 2],
@@ -29,7 +34,12 @@ args = parser.parse_args()
 config_file = args.config
 use_gpu = args.use_gpu
 
+
 if __name__ == '__main__':
+    video_path = 'D://PycharmProjects/moviepy/che3.mp4'
+    output_dir = './video_out'   # 生成的视频存放路径
+    fps = 60   # 生成的视频的帧率。应该和原视频一样。
+
     cfg = None
     if config_file == 0:
         cfg = YOLOv4_2x_Config()
@@ -40,23 +50,11 @@ if __name__ == '__main__':
 
 
     # 读取的模型
-    model_path = cfg.eval_cfg['model_path']
+    model_path = cfg.test_cfg['model_path']
 
     # 是否给图片画框。
-    draw_image = cfg.eval_cfg['draw_image']
-    draw_thresh = cfg.eval_cfg['draw_thresh']
-
-    # 验证时的批大小
-    eval_batch_size = cfg.eval_cfg['eval_batch_size']
-
-    # test集图片的相对路径
-    test_pre_path = '../COCO/test2017/'
-    anno_file = '../COCO/annotations/image_info_test-dev2017.json'
-    with open(anno_file, 'r', encoding='utf-8') as f2:
-        for line in f2:
-            line = line.strip()
-            dataset = json.loads(line)
-            images = dataset['images']
+    draw_image = cfg.test_cfg['draw_image']
+    draw_thresh = cfg.test_cfg['draw_thresh']
 
     all_classes = get_classes(cfg.classes_path)
     num_classes = len(all_classes)
@@ -78,12 +76,36 @@ if __name__ == '__main__':
     predict_model.load_weights(model_path, by_name=True, skip_mismatch=True)
     predict_model.summary(line_length=130)
 
-    _clsid2catid = copy.deepcopy(clsid2catid)
-    if num_classes != 80:   # 如果不是COCO数据集，而是自定义数据集
-        _clsid2catid = {}
-        for k in range(num_classes):
-            _clsid2catid[k] = k
+    _decode = Decode(predict_model, all_classes, use_gpu, cfg, for_test=True)
 
-    _decode = Decode(predict_model, all_classes, use_gpu, cfg, for_test=False)
-    eval(_decode, images, test_pre_path, anno_file, eval_batch_size, _clsid2catid, draw_image, draw_thresh, type='test_dev')
+    if not os.path.exists('images/res/'): os.mkdir('images/res/')
+    path_dir = os.listdir('images/test')
+
+    capture = cv2.VideoCapture(video_path)
+    width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    video_name = os.path.split(video_path)[-1]
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+    out_path = os.path.join(output_dir, video_name)
+    writer = cv2.VideoWriter(out_path, fourcc, fps, (width, height))
+    index = 1
+    start = time.time()
+    while (1):
+        ret, frame = capture.read()
+        if not ret:
+            break
+        print('detect frame:%d' % (index))
+        index += 1
+
+        pimage, im_size = _decode.process_image(np.copy(frame))
+        image, boxes, scores, classes = _decode.detect_image(frame, pimage, im_size, draw_image, draw_thresh)
+
+        cv2.imshow("detection", frame)
+        writer.write(frame)
+        if cv2.waitKey(110) & 0xff == 27:
+            break
+    writer.release()
+
 
